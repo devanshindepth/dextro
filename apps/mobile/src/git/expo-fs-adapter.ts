@@ -57,7 +57,7 @@ export const expoFsAdapter = {
     stat: async (filePath: string) => {
       const info = await FileSystem.getInfoAsync(filePath, { size: true });
       if (!info.exists) {
-        const err: NodeJS.ErrnoException = new Error(`ENOENT: no such file or directory, stat '${filePath}'`);
+        const err = new Error(`ENOENT: no such file or directory, stat '${filePath}'`) as Error & { code?: string };
         err.code = 'ENOENT';
         throw err;
       }
