@@ -4,8 +4,9 @@
   "description": "Mobile-centric AI Agent Orchestrator & Minimalist IDE",
   "private": true,
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "apps/mobile",
+    "packages/core",
+    "packages/core-types"
   ],
   "scripts": {
     "build": "turbo run build",
