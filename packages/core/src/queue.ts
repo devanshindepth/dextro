@@ -1,9 +1,8 @@
-import type { ToolExecution, ToolStatus } from 'db-schema';
+import type { ToolExecution, ToolStatus } from 'core-types';
 
 /**
  * Visual Execution Queue Manager
  * Manages the lifecycle of tool commands before/after user approval.
- * Works identically on mobile (local) and daemon (remote) sides.
  */
 export class ActionQueue {
   private queue: ToolExecution[] = [];
@@ -18,17 +17,29 @@ export class ActionQueue {
     return entry;
   }
 
-  approve(id: string): ToolExecution | null {
+  approve(id: string): ToolExecution {
     const tool = this.queue.find((t) => t.id === id);
-    if (!tool) return null;
-    tool.status = tool.requiresHost ? 'queued' : 'running';
+    if (!tool) throw new Error(`Action not found: ${id}`);
+    
+    tool.status = 'queued';
     tool.approvedAt = Date.now();
+    return tool;
+  }
+
+  reject(id: string, reason: string): ToolExecution {
+    const tool = this.queue.find((t) => t.id === id);
+    if (!tool) throw new Error(`Action not found: ${id}`);
+    
+    tool.status = 'failed';
+    tool.error = `Rejected by user: ${reason}`;
+    tool.completedAt = Date.now();
     return tool;
   }
 
   updateStatus(id: string, status: ToolStatus, output?: string, error?: string): void {
     const tool = this.queue.find((t) => t.id === id);
-    if (!tool) return;
+    if (!tool) throw new Error(`Action not found: ${id}`);
+    
     tool.status = status;
     if (output) tool.output = output;
     if (error) tool.error = error;
@@ -37,7 +48,11 @@ export class ActionQueue {
     }
   }
 
-  getPending(): ToolExecution[] {
+  getAction(id: string): ToolExecution | undefined {
+    return this.queue.find((t) => t.id === id);
+  }
+
+  getPendingActions(): ToolExecution[] {
     return this.queue.filter((t) => t.status === 'pending_approval');
   }
 

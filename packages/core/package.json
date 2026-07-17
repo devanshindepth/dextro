@@ -6,15 +6,21 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "test": "jest",
     "dev": "tsc --watch"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "db-schema": "*"
+    "core-types": "*"
   },
   "devDependencies": {
+    "@swc/core": "^1.15.43",
+    "@swc/jest": "^0.2.39",
+    "@types/jest": "^30.0.0",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.11",
     "typescript": "^7.0.0"
   }
 }
