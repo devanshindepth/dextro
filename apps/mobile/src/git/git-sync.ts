@@ -7,8 +7,9 @@ const REPOS_ROOT = `${FileSystem.documentDirectory}repos/`;
 
 /**
  * Dextro Git Sync Service
- * Wraps isomorphic-git with the expo-file-system adapter for background
- * push/pull operations against the remote GitHub relay.
+ * Wraps isomorphic-git with the expo-file-system adapter.
+ * This is the primary engine for codebase management in the purely
+ * Git-centric architecture, replacing the old daemon CRDT sync.
  */
 export const GitSyncService = {
   /**

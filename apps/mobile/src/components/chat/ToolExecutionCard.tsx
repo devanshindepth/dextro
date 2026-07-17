@@ -5,7 +5,7 @@ import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Badge, BadgeVariant } from '../ui/Badge';
 import { Terminal } from 'lucide-react-native';
-import type { ToolExecution } from 'db-schema';
+import type { ToolExecution } from 'core-types';
 
 interface ToolExecutionCardProps {
   tool: ToolExecution;

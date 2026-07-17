@@ -4,26 +4,39 @@ import { theme } from '../../theme';
 import { Badge } from '../ui/Badge';
 import { Server, WifiOff } from 'lucide-react-native';
 
+export type GitSyncStatus = 'synced' | 'unsynced' | 'syncing' | 'error';
+
 interface HeaderProps {
   projectName: string;
-  isDaemonOnline: boolean;
+  gitStatus: GitSyncStatus;
 }
 
-export const Header: React.FC<HeaderProps> = ({ projectName, isDaemonOnline }) => {
+export const Header: React.FC<HeaderProps> = ({ projectName, gitStatus }) => {
+  const getStatusConfig = () => {
+    switch (gitStatus) {
+      case 'synced':
+        return { text: 'Git Synced', variant: 'success' as BadgeVariant, icon: <Server color={theme.colors.accentEmerald} size={16} /> };
+      case 'syncing':
+        return { text: 'Syncing...', variant: 'default' as BadgeVariant, icon: <Server color={theme.colors.muted} size={16} /> };
+      case 'unsynced':
+        return { text: 'Uncommitted Changes', variant: 'warning' as BadgeVariant, icon: <WifiOff color={theme.colors.accentAmber} size={16} /> };
+      case 'error':
+        return { text: 'Sync Error', variant: 'error' as BadgeVariant, icon: <WifiOff color={theme.colors.accentRed} size={16} /> };
+    }
+  };
+
+  const config = getStatusConfig();
+
   return (
     <View style={styles.container}>
       <View style={styles.projectInfo}>
         <Text style={styles.projectName}>{projectName}</Text>
       </View>
       <View style={styles.status}>
-        {isDaemonOnline ? (
-          <Server color={theme.colors.accentEmerald} size={16} />
-        ) : (
-          <WifiOff color={theme.colors.muted} size={16} />
-        )}
+        {config.icon}
         <Badge 
-          text={isDaemonOnline ? 'Host Online' : 'Host Offline'} 
-          variant={isDaemonOnline ? 'success' : 'default'} 
+          text={config.text} 
+          variant={config.variant} 
           style={styles.badge}
         />
       </View>
