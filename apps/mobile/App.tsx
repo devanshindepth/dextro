@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, SafeAreaView, TextInput, ScrollView, Text } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as SecureStore from 'expo-secure-store';
+import * as FileSystem from 'expo-file-system';
 import {
   useFonts,
   Geist_400Regular,
@@ -10,23 +12,17 @@ import {
 import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono';
 
 import { theme } from './src/theme';
-import { Header } from './src/components/layout/Header';
+import { Header, GitSyncStatus } from './src/components/layout/Header';
 import { MessageBubble } from './src/components/chat/MessageBubble';
 import { ToolExecutionCard } from './src/components/chat/ToolExecutionCard';
 import { Button } from './src/components/ui/Button';
 
-// Mock Data for UI Demonstration
-const MOCK_MESSAGES = [
-  { id: '1', role: 'user' as const, content: 'Can you compile the typescript for the daemon package?' },
-  { id: '2', role: 'agent' as const, content: 'Sure, I will execute the build command in the daemon workspace.' },
-];
+// Internal Core Logic
+import { AgentOrchestrator } from 'shared-core/src/orchestrator';
+import { executeToolLocally } from './src/executor';
+import type { AgentSession, ToolExecution } from 'core-types';
 
-const MOCK_TOOL = {
-  id: 't1',
-  command: 'npm run build',
-  status: 'pending_approval' as const,
-  requiresHost: true,
-};
+const orchestrator = new AgentOrchestrator();
 
 export default function App() {
   const [fontsLoaded] = useFonts({
@@ -36,17 +32,97 @@ export default function App() {
     JetBrainsMono_400Regular,
   });
 
-  const [activeScreen, setActiveScreen] = useState<'chat' | 'settings'>('chat');
-  const [mockToolStatus, setMockToolStatus] = useState<typeof MOCK_TOOL.status | 'queued' | 'running' | 'completed' | 'failed'>(MOCK_TOOL.status);
+  const [activeScreen, setActiveScreen] = useState<'chat' | 'settings'>('settings');
+  const [session, setSession] = useState<AgentSession | null>(null);
+  
+  // Settings State
+  const [apiKey, setApiKey] = useState('');
+  const [repoUrl, setRepoUrl] = useState('');
+  
+  // Chat State
+  const [inputText, setInputText] = useState('');
+  const [gitStatus, setGitStatus] = useState<GitSyncStatus>('synced');
+  
+  // To trigger re-renders when orchestrator updates internal arrays
+  const [tick, setTick] = useState(0);
+  const forceUpdate = () => setTick(t => t + 1);
 
-  if (!fontsLoaded) {
-    return null; // or a sleek loading spinner
-  }
+  useEffect(() => {
+    // Load Settings
+    SecureStore.getItemAsync('openai_key').then(val => {
+      if (val) setApiKey(val);
+      if (val) setActiveScreen('chat'); // Auto-skip to chat if configured
+    });
+    SecureStore.getItemAsync('repo_url').then(val => {
+      if (val) setRepoUrl(val);
+    });
+    
+    // Initialize Session
+    const rootPath = `${FileSystem.documentDirectory}repos/default_project`;
+    const newSession = orchestrator.createSession(rootPath);
+    setSession(newSession);
+  }, []);
+
+  const saveSettings = async () => {
+    await SecureStore.setItemAsync('openai_key', apiKey);
+    await SecureStore.setItemAsync('repo_url', repoUrl);
+    setActiveScreen('chat');
+  };
+
+  const handleSend = async () => {
+    if (!inputText.trim() || !session || !apiKey) return;
+    const text = inputText;
+    setInputText('');
+    
+    try {
+      await orchestrator.processUserPrompt(session.id, text, apiKey);
+      forceUpdate();
+    } catch (e: any) {
+      orchestrator.addMessage(session.id, { role: 'system', content: `Error: ${e.message}` });
+      forceUpdate();
+    }
+  };
+
+  const handleApproveTool = async (toolId: string) => {
+    if (!session || !apiKey) return;
+    try {
+      const tool = orchestrator.queue.approve(toolId);
+      forceUpdate();
+
+      const output = await executeToolLocally(tool, session.projectPath, 'dummy_token'); // TODO: Git Token
+      orchestrator.queue.updateStatus(toolId, 'completed', output);
+      forceUpdate();
+
+      // Automatically continue the LLM loop
+      await orchestrator.continueSession(session.id, toolId, output, apiKey);
+      forceUpdate();
+    } catch (e: any) {
+      orchestrator.queue.updateStatus(toolId, 'failed', undefined, e.message);
+      forceUpdate();
+      await orchestrator.continueSession(session.id, toolId, `Failed to execute tool: ${e.message}`, apiKey);
+      forceUpdate();
+    }
+  };
+
+  const handleRejectTool = async (toolId: string) => {
+    if (!session || !apiKey) return;
+    try {
+      orchestrator.queue.reject(toolId, 'User rejected the action via UI.');
+      forceUpdate();
+      
+      await orchestrator.continueSession(session.id, toolId, `Tool execution was rejected by the user.`, apiKey);
+      forceUpdate();
+    } catch (e: any) {
+      console.error(e);
+    }
+  };
+
+  if (!fontsLoaded) return null;
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
-      <Header projectName="dextro-monorepo" isDaemonOnline={false} />
+      <Header projectName={repoUrl ? repoUrl.split('/').pop() || 'dextro' : 'dextro'} gitStatus={gitStatus} />
 
       {activeScreen === 'settings' ? (
         <View style={styles.settingsContainer}>
@@ -58,7 +134,6 @@ export default function App() {
           />
           <View style={styles.settingsForm}>
             <Text style={styles.settingsTitle}>Bring Your Own Key (BYOK)</Text>
-            <Text style={styles.settingsSubtitle}>Configure your LLM provider and Git repository.</Text>
             
             <View style={styles.inputGroup}>
               <Text style={styles.label}>OpenAI API Key</Text>
@@ -67,6 +142,8 @@ export default function App() {
                 placeholder="sk-..." 
                 placeholderTextColor={theme.colors.border}
                 secureTextEntry
+                value={apiKey}
+                onChangeText={setApiKey}
               />
             </View>
 
@@ -76,24 +153,29 @@ export default function App() {
                 style={styles.settingsInput} 
                 placeholder="https://github.com/user/repo.git" 
                 placeholderTextColor={theme.colors.border}
+                value={repoUrl}
+                onChangeText={setRepoUrl}
               />
             </View>
 
-            <Button title="Save Configuration" onPress={() => setActiveScreen('chat')} style={styles.saveBtn} />
+            <Button title="Save Configuration" onPress={saveSettings} style={styles.saveBtn} />
           </View>
         </View>
       ) : (
         <View style={styles.chatContainer}>
           <ScrollView contentContainerStyle={styles.scrollContent}>
-            {MOCK_MESSAGES.map((msg) => (
+            {session?.messages.map((msg) => (
               <MessageBubble key={msg.id} role={msg.role} content={msg.content} />
             ))}
             
-            <ToolExecutionCard 
-              tool={{ ...MOCK_TOOL, status: mockToolStatus }}
-              onApprove={() => setMockToolStatus('queued')}
-              onReject={() => setMockToolStatus('failed')}
-            />
+            {session?.toolQueue.map((tool: ToolExecution) => (
+              <ToolExecutionCard 
+                key={tool.id}
+                tool={tool}
+                onApprove={() => handleApproveTool(tool.id)}
+                onReject={() => handleRejectTool(tool.id)}
+              />
+            ))}
           </ScrollView>
 
           <View style={styles.inputArea}>
@@ -101,8 +183,11 @@ export default function App() {
               style={styles.input} 
               placeholder="Ask the agent..." 
               placeholderTextColor={theme.colors.muted}
+              value={inputText}
+              onChangeText={setInputText}
+              onSubmitEditing={handleSend}
             />
-            <Button title="Send" onPress={() => {}} />
+            <Button title="Send" onPress={handleSend} />
             <Button 
               title="⚙️" 
               variant="secondary" 
@@ -164,12 +249,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Geist_600SemiBold',
     fontSize: theme.typography.sizes.lg,
     color: theme.colors.foreground,
-    marginBottom: theme.spacing.xs,
-  },
-  settingsSubtitle: {
-    fontFamily: 'Geist_400Regular',
-    fontSize: theme.typography.sizes.sm,
-    color: theme.colors.muted,
     marginBottom: theme.spacing.xl,
   },
   inputGroup: {
@@ -188,7 +267,7 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.sm,
     padding: theme.spacing.md,
     color: theme.colors.foreground,
-    fontFamily: 'JetBrainsMono_400Regular', // Using mono for keys/urls
+    fontFamily: 'JetBrainsMono_400Regular',
   },
   saveBtn: {
     marginTop: theme.spacing.xl,
