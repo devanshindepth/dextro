@@ -12,7 +12,10 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "clean:android": "node -e \"const fs=require('fs'); ['apps/mobile/android/.gradle','apps/mobile/android/.kotlin','apps/mobile/android/build','apps/mobile/android/app/build'].forEach(p=>fs.rmSync(p,{recursive:true,force:true}));\"",
+    "android:jdk17": "npm.cmd --workspace apps/mobile run android:jdk17",
+    "build:android:debug": "npm.cmd --workspace apps/mobile run build:android:debug"
   },
   "keywords": [],
   "author": "",
@@ -20,5 +23,10 @@
   "devDependencies": {
     "turbo": "^2.10.5",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "expo": "~57.0.6",
+    "react": "19.2.3",
+    "react-native": "0.86.0"
   }
 }

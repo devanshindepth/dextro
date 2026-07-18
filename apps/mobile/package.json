@@ -5,19 +5,25 @@
   "dependencies": {
     "@expo-google-fonts/geist": "^0.4.2",
     "@expo-google-fonts/jetbrains-mono": "^0.4.1",
-    "core-types": "*",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "buffer": "^6.0.3",
-    "expo": "~57.0.6",
-    "expo-file-system": "~18.1.9",
+    "core-types": "*",
+    "expo": "~57.0.7",
+    "expo-clipboard": "^57.0.1",
+    "expo-file-system": "~57.0.1",
     "expo-font": "^57.0.1",
-    "expo-secure-store": "~14.2.3",
-    "expo-sqlite": "~15.2.12",
+    "expo-intent-launcher": "^57.0.1",
+    "expo-secure-store": "~57.0.1",
+    "expo-sqlite": "~57.0.1",
     "expo-status-bar": "~57.0.1",
     "isomorphic-git": "^1.27.2",
     "lucide-react-native": "^1.24.0",
     "react": "19.2.3",
     "react-native": "0.86.0",
-    "react-native-get-random-values": "^1.11.0"
+    "react-native-get-random-values": "^1.11.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-svg": "15.15.4",
+    "shared-core": "*"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
@@ -25,8 +31,10 @@
   },
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ts:check": "tsc --noEmit"
+    "android": "expo run:android",
+    "ts:check": "tsc --noEmit",
+    "android:jdk17": "set JAVA_HOME=C:\\Program Files\\Java\\jdk-17&& set PATH=C:\\Program Files\\Java\\jdk-17\\bin;%PATH%&& expo run:android",
+    "build:android:debug": "set JAVA_HOME=C:\\Program Files\\Java\\jdk-17&& set PATH=C:\\Program Files\\Java\\jdk-17\\bin;%PATH%&& cd android&& gradlew.bat app:assembleDebug -x lint -x test --configure-on-demand --build-cache -PreactNativeDevServerPort=8081 -PreactNativeArchitectures=x86_64"
   },
   "private": true
 }
