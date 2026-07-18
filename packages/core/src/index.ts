@@ -2,3 +2,7 @@
 
 export * from './orchestrator';
 export * from './queue';
+export * from './context-manager';
+export * from './llm/client';
+export * from './llm/tools';
+export * from './security/sandbox';
