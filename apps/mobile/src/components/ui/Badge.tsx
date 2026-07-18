@@ -1,56 +1,52 @@
 import React from 'react';
-import { View, Text, StyleSheet, ViewStyle } from 'react-native';
-import { theme } from '../../theme';
+import { View, Text, StyleSheet } from 'react-native';
+import { useTheme } from '../../theme';
 
 export type BadgeVariant = 'default' | 'success' | 'warning' | 'error';
 
 interface BadgeProps {
   text: string;
   variant?: BadgeVariant;
-  style?: ViewStyle;
+  style?: object;
 }
 
 export const Badge: React.FC<BadgeProps> = ({ text, variant = 'default', style }) => {
+  const { colors, spacing, radius, typography } = useTheme();
+
   const getColors = () => {
     switch (variant) {
       case 'success':
-        return { bg: 'rgba(51, 255, 119, 0.1)', text: theme.colors.accentEmerald, border: 'rgba(51, 255, 119, 0.2)' };
+        return { bg: `${colors.accentEmerald}18`, text: colors.accentEmerald, border: `${colors.accentEmerald}30` };
       case 'warning':
-        return { bg: 'rgba(245, 166, 35, 0.1)', text: theme.colors.accentAmber, border: 'rgba(245, 166, 35, 0.2)' };
+        return { bg: `${colors.accentAmber}18`, text: colors.accentAmber, border: `${colors.accentAmber}30` };
       case 'error':
-        return { bg: 'rgba(255, 51, 51, 0.1)', text: theme.colors.accentRed, border: 'rgba(255, 51, 51, 0.2)' };
+        return { bg: `${colors.accentRed}18`, text: colors.accentRed, border: `${colors.accentRed}30` };
       default:
-        return { bg: theme.colors.surfaceHover, text: theme.colors.muted, border: theme.colors.border };
+        return { bg: colors.surfaceHover, text: colors.muted, border: colors.border };
     }
   };
 
-  const colors = getColors();
+  const badgeColors = getColors();
 
   return (
-    <View style={[
-      styles.badge,
-      { backgroundColor: colors.bg, borderColor: colors.border },
-      style
-    ]}>
-      <Text style={[styles.text, { color: colors.text }]}>
+    <View style={[{
+      backgroundColor: badgeColors.bg,
+      borderColor: badgeColors.border,
+      borderWidth: 1,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 2,
+      borderRadius: radius.xs,
+      alignSelf: 'flex-start' as const,
+    }, style]}>
+      <Text style={{
+        fontFamily: typography.fonts.uiMedium,
+        fontSize: 10,
+        color: badgeColors.text,
+        textTransform: 'uppercase' as const,
+        letterSpacing: 0.5,
+      }}>
         {text}
       </Text>
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  badge: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 2,
-    borderRadius: theme.radius.sm,
-    borderWidth: 1,
-    alignSelf: 'flex-start',
-  },
-  text: {
-    fontFamily: 'Geist_500Medium',
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  }
-});
