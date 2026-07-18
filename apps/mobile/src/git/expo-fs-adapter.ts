@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Buffer } from 'buffer';
 
 /**
@@ -13,6 +13,13 @@ import { Buffer } from 'buffer';
 
 type Encoding = 'utf8' | 'binary' | undefined;
 
+const ensureUri = (path: string): string => {
+  if (path.startsWith('file://') || path.startsWith('content://')) {
+    return path;
+  }
+  return `file://${path}`;
+};
+
 export const expoFsAdapter = {
   promises: {
     readFile: async (filePath: string, options?: { encoding?: Encoding }) => {
@@ -20,7 +27,7 @@ export const expoFsAdapter = {
         ? FileSystem.EncodingType.UTF8
         : FileSystem.EncodingType.Base64;
 
-      const content = await FileSystem.readAsStringAsync(filePath, { encoding: enc });
+      const content = await FileSystem.readAsStringAsync(ensureUri(filePath), { encoding: enc });
 
       if (enc === FileSystem.EncodingType.UTF8) {
         return content; // string
@@ -43,19 +50,19 @@ export const expoFsAdapter = {
         encoding = FileSystem.EncodingType.Base64;
       }
 
-      await FileSystem.writeAsStringAsync(filePath, content, { encoding });
+      await FileSystem.writeAsStringAsync(ensureUri(filePath), content, { encoding });
     },
 
     mkdir: async (dirPath: string, _options?: { recursive?: boolean }) => {
-      await FileSystem.makeDirectoryAsync(dirPath, { intermediates: true });
+      await FileSystem.makeDirectoryAsync(ensureUri(dirPath), { intermediates: true });
     },
 
     readdir: async (dirPath: string): Promise<string[]> => {
-      return await FileSystem.readDirectoryAsync(dirPath);
+      return await FileSystem.readDirectoryAsync(ensureUri(dirPath));
     },
 
     stat: async (filePath: string) => {
-      const info = await FileSystem.getInfoAsync(filePath, { size: true });
+      const info = await FileSystem.getInfoAsync(ensureUri(filePath), { size: true } as any);
       if (!info.exists) {
         const err = new Error(`ENOENT: no such file or directory, stat '${filePath}'`) as Error & { code?: string };
         err.code = 'ENOENT';
@@ -79,15 +86,15 @@ export const expoFsAdapter = {
     },
 
     unlink: async (filePath: string) => {
-      await FileSystem.deleteAsync(filePath, { idempotent: true });
+      await FileSystem.deleteAsync(ensureUri(filePath), { idempotent: true });
     },
 
     rmdir: async (dirPath: string) => {
-      await FileSystem.deleteAsync(dirPath, { idempotent: true });
+      await FileSystem.deleteAsync(ensureUri(dirPath), { idempotent: true });
     },
 
     rename: async (oldPath: string, newPath: string) => {
-      await FileSystem.moveAsync({ from: oldPath, to: newPath });
+      await FileSystem.moveAsync({ from: ensureUri(oldPath), to: ensureUri(newPath) });
     },
   },
 };
