@@ -1,275 +1,609 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, SafeAreaView, TextInput, ScrollView, Text } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
-import * as SecureStore from 'expo-secure-store';
-import * as FileSystem from 'expo-file-system';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  useFonts,
-  Geist_400Regular,
-  Geist_500Medium,
-  Geist_600SemiBold,
-} from '@expo-google-fonts/geist';
-import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono';
+  StyleSheet,
+  View,
+  TextInput,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  KeyboardAvoidingView,
+  Platform,
+  ActivityIndicator,
+} from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import * as Font from 'expo-font';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { theme } from './src/theme';
+// ─── Theme ────────────────────────────────────────────────────────────────────
+import { ThemeProvider, useTheme } from './src/theme';
+
+// ─── Components ───────────────────────────────────────────────────────────────
 import { Header, GitSyncStatus } from './src/components/layout/Header';
+import { Sidebar } from './src/components/layout/Sidebar';
+import { SettingsPanel } from './src/components/layout/SettingsPanel';
+import { NewChatView } from './src/components/chat/NewChatView';
 import { MessageBubble } from './src/components/chat/MessageBubble';
 import { ToolExecutionCard } from './src/components/chat/ToolExecutionCard';
-import { Button } from './src/components/ui/Button';
+import { ThinkingIndicator } from './src/components/chat/ThinkingIndicator';
+import { SetupWizard } from './src/components/onboarding/SetupWizard';
+import { TerminalView } from './src/components/terminal/TerminalView';
 
-// Internal Core Logic
-import { AgentOrchestrator } from 'shared-core/src/orchestrator';
+// ─── Core Logic ───────────────────────────────────────────────────────────────
+import { AgentOrchestrator, getModelInfo, inferProvider } from 'shared-core';
 import { executeToolLocally } from './src/executor';
-import type { AgentSession, ToolExecution } from 'core-types';
+import type { AgentSession, ToolExecution, SetupStatus } from 'core-types';
 
+// ─── Store ────────────────────────────────────────────────────────────────────
+import {
+  loadAllSessions,
+  saveSession,
+  appendMessage,
+  upsertToolExecution,
+} from './src/store/session-store';
+import {
+  loadSettings,
+  getApiKey,
+  getGithubToken,
+  saveSettings,
+  setApiKey as saveApiKey,
+} from './src/store/settings-store';
+import { groupSessionsByProject } from './src/utils/session-utils';
+
+// ─── Shared Storage Root ─────────────────────────────────────────────────────
+const SHARED_PROJECTS_ROOT = '/storage/emulated/0/Dextro/projects';
+
+// ─── Orchestrator (singleton) ─────────────────────────────────────────────────
 const orchestrator = new AgentOrchestrator();
 
-export default function App() {
-  const [fontsLoaded] = useFonts({
-    Geist_400Regular,
-    Geist_500Medium,
-    Geist_600SemiBold,
-    JetBrainsMono_400Regular,
-  });
+// ─── Inner App ────────────────────────────────────────────────────────────────
+function DextroApp() {
+  const { colors, mode, spacing } = useTheme();
 
-  const [activeScreen, setActiveScreen] = useState<'chat' | 'settings'>('settings');
+  // ── Loading / Setup ──────────────────────────────────────────────────────
+  const [fontsLoaded, setFontsLoaded] = useState(false);
+  const [setupState, setSetupState] = useState<'loading' | 'incomplete' | 'completed'>('loading');
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+
+  // ── Sessions ─────────────────────────────────────────────────────────────
   const [session, setSession] = useState<AgentSession | null>(null);
-  
-  // Settings State
-  const [apiKey, setApiKey] = useState('');
-  const [repoUrl, setRepoUrl] = useState('');
-  
-  // Chat State
-  const [inputText, setInputText] = useState('');
-  const [gitStatus, setGitStatus] = useState<GitSyncStatus>('synced');
-  
-  // To trigger re-renders when orchestrator updates internal arrays
-  const [tick, setTick] = useState(0);
-  const forceUpdate = () => setTick(t => t + 1);
+  const [allSessions, setAllSessions] = useState<AgentSession[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | undefined>();
 
+  // ── Nav ──────────────────────────────────────────────────────────────────
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [settingsProject, setSettingsProject] = useState<string | undefined>();
+
+  // ── Settings ─────────────────────────────────────────────────────────────
+  const [apiKey, setApiKey] = useState('');
+  const [githubToken, setGithubToken] = useState('');
+  const [selectedModel, setSelectedModel] = useState('claude-sonnet-4-5');
+  const [repoUrl, setRepoUrl] = useState('');
+
+  // ── Agent State ───────────────────────────────────────────────────────────
+  const [isAgentRunning, setIsAgentRunning] = useState(false);
+  const [thinkingLabel, setThinkingLabel] = useState('Dextro is thinking');
+  const [inputText, setInputText] = useState('');
+  const [gitStatus] = useState<GitSyncStatus>('synced');
+  const [tick, setTick] = useState(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // ── Scroll ────────────────────────────────────────────────────────────────
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  const forceUpdate = useCallback(() => setTick((t) => t + 1), []);
+
+  // ── Font Loading ──────────────────────────────────────────────────────────
   useEffect(() => {
-    // Load Settings
-    SecureStore.getItemAsync('openai_key').then(val => {
-      if (val) setApiKey(val);
-      if (val) setActiveScreen('chat'); // Auto-skip to chat if configured
-    });
-    SecureStore.getItemAsync('repo_url').then(val => {
-      if (val) setRepoUrl(val);
-    });
-    
-    // Initialize Session
-    const rootPath = `${FileSystem.documentDirectory}repos/default_project`;
-    const newSession = orchestrator.createSession(rootPath);
-    setSession(newSession);
+    Font.loadAsync({
+      'GeistPixel-Regular': require('./GeistFonts/GeistPixel-Regular.ttf'),
+      'GeistPixel-Medium': require('./GeistFonts/GeistPixel-Medium.ttf'),
+      'GeistPixel-SemiBold': require('./GeistFonts/GeistPixel-SemiBold.ttf'),
+      'GeistMono-Regular': require('./GeistFonts/GeistMono-Regular.ttf'),
+    }).then(() => setFontsLoaded(true));
   }, []);
 
-  const saveSettings = async () => {
-    await SecureStore.setItemAsync('openai_key', apiKey);
-    await SecureStore.setItemAsync('repo_url', repoUrl);
-    setActiveScreen('chat');
-  };
+  // ── Initial Load ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        // Load persisted settings
+        const [settings, savedSessions] = await Promise.all([
+          loadSettings(),
+          loadAllSessions(),
+        ]);
 
-  const handleSend = async () => {
-    if (!inputText.trim() || !session || !apiKey) return;
-    const text = inputText;
-    setInputText('');
-    
+        if (!isMounted) return;
+
+        setAllSessions(savedSessions);
+        setSelectedModel(settings.defaultModel);
+
+        const key = await getApiKey(settings.defaultProvider);
+        if (key) setApiKey(key);
+
+        const token = await getGithubToken();
+        if (token) setGithubToken(token);
+
+        // Check if setup was previously completed
+        const setupFlag = await AsyncStorage.getItem('@setup_complete');
+        // If API key is missing or setup wasn't complete, we drop to the setup wizard
+        if (setupFlag === 'true') {
+          setSetupState('completed');
+        } else {
+          setSetupState('incomplete');
+        }
+      } catch (err) {
+        // Fail closed to wizard on any storage exception
+        if (isMounted) setSetupState('incomplete');
+        console.warn('Boot initialization failed:', err);
+      }
+    })();
+    return () => { isMounted = false; };
+  }, []);
+
+  // ── Orchestrator Callbacks ────────────────────────────────────────────────
+  useEffect(() => {
+    orchestrator.setCallbacks({
+      onText: (sessionId, _chunk) => {
+        if (session?.id === sessionId) forceUpdate();
+      },
+
+      onToolProposed: (sessionId, tool) => {
+        if (session?.id !== sessionId) return;
+
+        // Auto-approved tools need to be executed immediately
+        if (tool.status === 'running') {
+          executeAutoTool(tool);
+        }
+        forceUpdate();
+      },
+
+      onToolStreamChunk: (sessionId, toolId, chunk) => {
+        if (session?.id !== sessionId) return;
+        orchestrator.queue.updateStreamingOutput(toolId, chunk);
+        forceUpdate();
+      },
+
+      onTurnComplete: (sessionId) => {
+        if (session?.id === sessionId) {
+          setIsAgentRunning(false);
+          setThinkingLabel('Dextro is thinking');
+          persistSession(sessionId);
+          scrollViewRef.current?.scrollToEnd({ animated: true });
+        }
+      },
+
+      onError: (sessionId, error) => {
+        if (session?.id === sessionId) {
+          setIsAgentRunning(false);
+          console.error('[Orchestrator]', error);
+        }
+      },
+
+      onStateChange: (sessionId) => {
+        if (session?.id === sessionId) {
+          forceUpdate();
+          scrollViewRef.current?.scrollToEnd({ animated: true });
+        }
+      },
+    });
+  }, [session, forceUpdate]);
+
+  // ── Execute an auto-approved tool (tier: auto, or confirm in standard preset) ──
+  const executeAutoTool = useCallback(async (tool: ToolExecution) => {
+    if (!session) return;
+
+    const currentApiKey = apiKey;
+    const projectRoot = session.settings.projectPath;
+
     try {
-      await orchestrator.processUserPrompt(session.id, text, apiKey);
+      const output = await executeToolLocally(tool, projectRoot, githubToken, {
+        onChunk: (toolId, chunk) => {
+          orchestrator.queue.updateStreamingOutput(toolId, chunk);
+          setThinkingLabel(`Running: ${tool.toolName}`);
+          forceUpdate();
+        },
+      }, abortControllerRef.current?.signal);
+
+      orchestrator.queue.updateStatus(tool.id, 'completed', output);
       forceUpdate();
-    } catch (e: any) {
-      orchestrator.addMessage(session.id, { role: 'system', content: `Error: ${e.message}` });
+      await upsertToolExecution(session.id, { ...tool, status: 'completed', output });
+
+      await orchestrator.continueAfterTool(
+        session.id, tool.id, output, false, currentApiKey,
+        abortControllerRef.current?.signal
+      );
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      orchestrator.queue.updateStatus(tool.id, 'failed', undefined, errorMsg);
       forceUpdate();
+      await upsertToolExecution(session.id, { ...tool, status: 'failed', error: errorMsg });
+
+      await orchestrator.continueAfterTool(
+        session.id, tool.id, `Error: ${errorMsg}`, true, currentApiKey,
+        abortControllerRef.current?.signal
+      );
     }
-  };
+  }, [session, apiKey, githubToken, forceUpdate]);
 
-  const handleApproveTool = async (toolId: string) => {
-    if (!session || !apiKey) return;
+  // ── Create a new session ──────────────────────────────────────────────────
+  const createNewSession = useCallback(async (projectName = 'default_project', model = selectedModel) => {
+    const provider = inferProvider(model);
+    const projectPath = `${SHARED_PROJECTS_ROOT}/${projectName}`;
+
+    const newSession = orchestrator.createSession(projectPath, {
+      provider,
+      model,
+      securityPreset: 'standard',
+    });
+
+    await saveSession(newSession);
+    setAllSessions((prev) => [newSession, ...prev]);
+    setSession(newSession);
+    setActiveConversationId(newSession.id);
+    return newSession;
+  }, [selectedModel]);
+
+  // ── Persist session to SQLite ──────────────────────────────────────────────
+  const persistSession = useCallback(async (sessionId: string) => {
+    const s = orchestrator.getSession(sessionId);
+    if (!s) return;
+    await saveSession(s);
+    // Persist new messages
+    for (const msg of s.messages) {
+      if (!msg.isStreaming) await appendMessage(sessionId, msg);
+    }
+  }, []);
+
+  // ── Send message ──────────────────────────────────────────────────────────
+  const handleSend = useCallback(async (text: string, model: string, _worktree: string) => {
+    if (!text.trim() || !apiKey) return;
+
+    let activeSession = session;
+    if (!activeSession) {
+      activeSession = await createNewSession('default_project', model);
+    }
+
+    // Update model if it changed
+    if (model !== activeSession.settings.model) {
+      orchestrator.updateSessionSettings(activeSession.id, {
+        model,
+        provider: inferProvider(model),
+      });
+    }
+
+    const abort = new AbortController();
+    abortControllerRef.current = abort;
+    setIsAgentRunning(true);
+    setInputText('');
+
     try {
-      const tool = orchestrator.queue.approve(toolId);
-      forceUpdate();
+      await orchestrator.processUserPrompt(activeSession.id, text, apiKey, abort.signal);
+    } finally {
+      setIsAgentRunning(false);
+    }
+  }, [session, apiKey, createNewSession]);
 
-      const output = await executeToolLocally(tool, session.projectPath, 'dummy_token'); // TODO: Git Token
+  const handleSendFromInput = useCallback(async () => {
+    if (!inputText.trim()) return;
+    await handleSend(inputText, selectedModel, 'local');
+  }, [inputText, selectedModel, handleSend]);
+
+  // ── Approve a tool ────────────────────────────────────────────────────────
+  const handleApproveTool = useCallback(async (toolId: string) => {
+    if (!session || !apiKey) return;
+
+    const tool = orchestrator.queue.approve(toolId);
+    forceUpdate();
+
+    try {
+      const output = await executeToolLocally(tool, session.settings.projectPath, githubToken, {
+        onChunk: (tid, chunk) => {
+          orchestrator.queue.updateStreamingOutput(tid, chunk);
+          setThinkingLabel(`Running: ${tool.toolName}`);
+          forceUpdate();
+        },
+      }, abortControllerRef.current?.signal);
+
       orchestrator.queue.updateStatus(toolId, 'completed', output);
       forceUpdate();
+      await upsertToolExecution(session.id, { ...tool, status: 'completed', output });
 
-      // Automatically continue the LLM loop
-      await orchestrator.continueSession(session.id, toolId, output, apiKey);
+      setIsAgentRunning(true);
+      await orchestrator.continueAfterTool(
+        session.id, toolId, output, false, apiKey,
+        abortControllerRef.current?.signal
+      );
+    } catch (e: unknown) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      orchestrator.queue.updateStatus(toolId, 'failed', undefined, errorMsg);
       forceUpdate();
-    } catch (e: any) {
-      orchestrator.queue.updateStatus(toolId, 'failed', undefined, e.message);
-      forceUpdate();
-      await orchestrator.continueSession(session.id, toolId, `Failed to execute tool: ${e.message}`, apiKey);
-      forceUpdate();
+      await upsertToolExecution(session.id, { ...tool, status: 'failed', error: errorMsg });
+
+      setIsAgentRunning(true);
+      await orchestrator.continueAfterTool(
+        session.id, toolId, `Error: ${errorMsg}`, true, apiKey,
+        abortControllerRef.current?.signal
+      );
+    } finally {
+      setIsAgentRunning(false);
     }
-  };
+  }, [session, apiKey, githubToken, forceUpdate]);
 
-  const handleRejectTool = async (toolId: string) => {
+  // ── Reject a tool ─────────────────────────────────────────────────────────
+  const handleRejectTool = useCallback(async (toolId: string) => {
     if (!session || !apiKey) return;
-    try {
-      orchestrator.queue.reject(toolId, 'User rejected the action via UI.');
-      forceUpdate();
-      
-      await orchestrator.continueSession(session.id, toolId, `Tool execution was rejected by the user.`, apiKey);
-      forceUpdate();
-    } catch (e: any) {
-      console.error(e);
-    }
-  };
+    orchestrator.queue.reject(toolId, 'User rejected the action.');
+    forceUpdate();
 
-  if (!fontsLoaded) return null;
+    setIsAgentRunning(true);
+    try {
+      await orchestrator.continueAfterTool(
+        session.id, toolId, 'Tool execution was rejected by the user.', false, apiKey,
+        abortControllerRef.current?.signal
+      );
+    } finally {
+      setIsAgentRunning(false);
+    }
+  }, [session, apiKey, forceUpdate]);
+
+  // ── Stop agent ────────────────────────────────────────────────────────────
+  const handleStop = useCallback(() => {
+    abortControllerRef.current?.abort();
+    setIsAgentRunning(false);
+  }, []);
+
+  // ── New conversation ──────────────────────────────────────────────────────
+  const handleNewConversation = useCallback(() => {
+    setSession(null);
+    setActiveConversationId(undefined);
+    setIsSidebarOpen(false);
+  }, []);
+
+  // ── Select conversation from sidebar ─────────────────────────────────────
+  const handleSelectConversation = useCallback((id: string) => {
+    const found = allSessions.find((s) => s.id === id);
+    if (found) {
+      setSession(found);
+      setActiveConversationId(id);
+    }
+    setIsSidebarOpen(false);
+  }, [allSessions]);
+
+  // ── Guards ────────────────────────────────────────────────────────────────
+  if (!fontsLoaded || setupState === 'loading') {
+    return (
+      <View style={[styles.root, { backgroundColor: colors.background, justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator color={colors.accentBlue} size="large" />
+      </View>
+    );
+  }
+
+  if (setupState === 'incomplete') {
+    return (
+      <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+        <SetupWizard onComplete={async (status) => {
+          setSetupStatus(status);
+          try {
+            await AsyncStorage.setItem('@setup_complete', 'true');
+          } catch (e) {
+            console.warn('Failed to save setup completion', e);
+          }
+          setSetupState('completed');
+        }} />
+      </SafeAreaView>
+    );
+  }
+
+  const hasMessages = session && session.messages.length > 0;
+  const projectName = session?.settings.remoteGitUrl?.split('/').pop()
+    ?? session?.settings.projectPath.split('/').pop()
+    ?? 'dextro';
+
+  const hasPendingTools = session?.toolQueue.some(t => t.status === 'pending_approval');
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar style="light" />
-      <Header projectName={repoUrl ? repoUrl.split('/').pop() || 'dextro' : 'dextro'} gitStatus={gitStatus} />
+    <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
+      <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
 
-      {activeScreen === 'settings' ? (
-        <View style={styles.settingsContainer}>
-          <Button 
-            title="← Back to Chat" 
-            variant="secondary" 
-            onPress={() => setActiveScreen('chat')}
-            style={styles.backButton}
+      {/* ─── Top Header ─── */}
+      <Header
+        projectName={projectName}
+        gitStatus={gitStatus}
+        onMenuPress={() => setIsSidebarOpen(true)}
+        onTerminalPress={() => setIsTerminalOpen(true)}
+      />
+
+      {/* ─── Content Area ─── */}
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={0}
+      >
+        {hasMessages ? (
+          <View style={styles.flex}>
+            <ScrollView
+              ref={scrollViewRef}
+              style={styles.flex}
+              contentContainerStyle={{ paddingVertical: spacing.md }}
+              onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: false })}
+            >
+              {session.messages.map((msg) => (
+                <MessageBubble
+                  key={msg.id}
+                  role={msg.role}
+                  content={msg.content}
+                  isStreaming={msg.isStreaming}
+                />
+              ))}
+
+              {session.toolQueue.map((tool: ToolExecution) => (
+                <ToolExecutionCard
+                  key={tool.id}
+                  tool={tool}
+                  onApprove={() => handleApproveTool(tool.id)}
+                  onReject={() => handleRejectTool(tool.id)}
+                />
+              ))}
+
+              {/* Thinking indicator */}
+              <ThinkingIndicator
+                visible={isAgentRunning && !hasPendingTools}
+                label={thinkingLabel}
+              />
+            </ScrollView>
+
+            {/* Active chat input bar */}
+            <View style={[styles.chatInputBar, {
+              backgroundColor: colors.surface,
+              borderTopColor: colors.border,
+            }]}>
+              <TextInput
+                style={[styles.chatInput, {
+                  backgroundColor: colors.background,
+                  borderColor: colors.border,
+                  color: colors.foreground,
+                  fontFamily: 'GeistPixel-Regular',
+                }]}
+                placeholder="Ask the agent..."
+                placeholderTextColor={colors.muted}
+                value={inputText}
+                onChangeText={setInputText}
+                onSubmitEditing={handleSendFromInput}
+                returnKeyType="send"
+                editable={!isAgentRunning}
+                multiline
+                maxLength={4000}
+              />
+
+              {isAgentRunning ? (
+                <TouchableOpacity
+                  style={[styles.sendIconBtn, { backgroundColor: colors.accentRed }]}
+                  onPress={handleStop}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.sendBtnText, { color: '#FFFFFF', fontFamily: 'GeistPixel-Medium' }]}>■</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.sendIconBtn, {
+                    backgroundColor: inputText.trim() ? colors.accentBlue : colors.surfaceHover,
+                  }]}
+                  onPress={handleSendFromInput}
+                  activeOpacity={0.8}
+                  disabled={!inputText.trim()}
+                >
+                  <Text style={[styles.sendBtnText, {
+                    color: inputText.trim() ? '#FFFFFF' : colors.muted,
+                    fontFamily: 'GeistPixel-Medium',
+                  }]}>↑</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        ) : (
+          <NewChatView
+            projectName={projectName}
+            onSend={handleSend}
+            onAttachFile={() => {}}
           />
-          <View style={styles.settingsForm}>
-            <Text style={styles.settingsTitle}>Bring Your Own Key (BYOK)</Text>
-            
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>OpenAI API Key</Text>
-              <TextInput 
-                style={styles.settingsInput} 
-                placeholder="sk-..." 
-                placeholderTextColor={theme.colors.border}
-                secureTextEntry
-                value={apiKey}
-                onChangeText={setApiKey}
-              />
-            </View>
+        )}
+      </KeyboardAvoidingView>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Project Repository URL</Text>
-              <TextInput 
-                style={styles.settingsInput} 
-                placeholder="https://github.com/user/repo.git" 
-                placeholderTextColor={theme.colors.border}
-                value={repoUrl}
-                onChangeText={setRepoUrl}
-              />
-            </View>
-
-            <Button title="Save Configuration" onPress={saveSettings} style={styles.saveBtn} />
-          </View>
-        </View>
-      ) : (
-        <View style={styles.chatContainer}>
-          <ScrollView contentContainerStyle={styles.scrollContent}>
-            {session?.messages.map((msg) => (
-              <MessageBubble key={msg.id} role={msg.role} content={msg.content} />
-            ))}
-            
-            {session?.toolQueue.map((tool: ToolExecution) => (
-              <ToolExecutionCard 
-                key={tool.id}
-                tool={tool}
-                onApprove={() => handleApproveTool(tool.id)}
-                onReject={() => handleRejectTool(tool.id)}
-              />
-            ))}
-          </ScrollView>
-
-          <View style={styles.inputArea}>
-            <TextInput 
-              style={styles.input} 
-              placeholder="Ask the agent..." 
-              placeholderTextColor={theme.colors.muted}
-              value={inputText}
-              onChangeText={setInputText}
-              onSubmitEditing={handleSend}
-            />
-            <Button title="Send" onPress={handleSend} />
-            <Button 
-              title="⚙️" 
-              variant="secondary" 
-              onPress={() => setActiveScreen('settings')} 
-              style={styles.settingsBtn}
-            />
-          </View>
+      {/* ─── In-House Terminal ─── */}
+      {isTerminalOpen && (
+        <View style={StyleSheet.absoluteFill}>
+          <TerminalView 
+            cwd={session?.settings.projectPath ?? `${SHARED_PROJECTS_ROOT}/${projectName}`} 
+            onClose={() => setIsTerminalOpen(false)} 
+          />
         </View>
       )}
+
+      <Sidebar
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        onNewConversation={handleNewConversation}
+        onOpenSettings={() => {
+          setIsSidebarOpen(false);
+          setTimeout(() => setIsSettingsOpen(true), 250);
+        }}
+        onOpenProjectSettings={(proj) => {
+          setTimeout(() => {
+            setSettingsProject(proj);
+            setIsSettingsOpen(true);
+          }, 250);
+        }}
+        activeConversationId={activeConversationId}
+        onSelectConversation={handleSelectConversation}
+        sessions={groupSessionsByProject(allSessions)}
+      />
+
+      <SettingsPanel
+        visible={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        initialProject={settingsProject}
+        apiKey={apiKey}
+        onApiKeyChange={async (val) => {
+          setApiKey(val);
+          await saveApiKey(inferProvider(selectedModel), val);
+        }}
+        modelName={selectedModel}
+        onModelNameChange={async (val) => {
+          setSelectedModel(val);
+          await saveSettings({ defaultModel: val, defaultProvider: inferProvider(val) });
+        }}
+        repoUrl={repoUrl}
+        onRepoUrlChange={setRepoUrl}
+        onSave={async () => {
+          setIsSettingsOpen(false);
+        }}
+        sessions={groupSessionsByProject(allSessions)}
+      />
     </SafeAreaView>
   );
 }
 
+// ─── Root App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <ThemeProvider>
+        <DextroApp />
+      </ThemeProvider>
+    </SafeAreaProvider>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-  },
-  chatContainer: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingVertical: theme.spacing.md,
-  },
-  inputArea: {
+  root: { flex: 1 },
+  flex: { flex: 1 },
+  chatInputBar: {
     flexDirection: 'row',
-    padding: theme.spacing.md,
+    padding: 12,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    gap: theme.spacing.sm,
+    gap: 8,
+    alignItems: 'flex-end',
   },
-  input: {
+  chatInput: {
     flex: 1,
-    backgroundColor: theme.colors.background,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.sm,
-    paddingHorizontal: theme.spacing.md,
-    color: theme.colors.foreground,
-    fontFamily: 'Geist_400Regular',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    minHeight: 44,
+    maxHeight: 120,
   },
-  settingsBtn: {
-    paddingHorizontal: theme.spacing.sm,
+  sendIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  settingsContainer: {
-    flex: 1,
-    padding: theme.spacing.md,
-  },
-  backButton: {
-    alignSelf: 'flex-start',
-    marginBottom: theme.spacing.lg,
-  },
-  settingsForm: {
-    flex: 1,
-    marginTop: theme.spacing.lg,
-  },
-  settingsTitle: {
-    fontFamily: 'Geist_600SemiBold',
-    fontSize: theme.typography.sizes.lg,
-    color: theme.colors.foreground,
-    marginBottom: theme.spacing.xl,
-  },
-  inputGroup: {
-    marginBottom: theme.spacing.lg,
-  },
-  label: {
-    fontFamily: 'Geist_500Medium',
-    fontSize: theme.typography.sizes.sm,
-    color: theme.colors.foreground,
-    marginBottom: theme.spacing.sm,
-  },
-  settingsInput: {
-    backgroundColor: theme.colors.background,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.sm,
-    padding: theme.spacing.md,
-    color: theme.colors.foreground,
-    fontFamily: 'JetBrainsMono_400Regular',
-  },
-  saveBtn: {
-    marginTop: theme.spacing.xl,
-  }
+  sendBtnText: { fontSize: 18, fontWeight: '700' },
 });
